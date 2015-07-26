@@ -1,0 +1,106 @@
+---
+title: "Practical Machine Learning Project"
+author: "Kateryna Savchyn"
+date: "July 26, 2015"
+output: html_document
+---
+
+### Load Data & Explore
+
+```{r, cache=T, message=FALSE, results='hide'}
+library(doParallel)
+registerDoParallel(cores=2)
+## Your training data set should be in your working directory
+T_Data <- read.csv("pml-training.csv", na.strings=c("", "NA"))   ## read in so that blanks are perceived as NAs 
+summary(T_Data)
+```
+
+```{r}
+dim(T_Data)
+```
+
+From the summary, there are several variables with 19,216 NAs, which is about 98% of the total observations. These variables should be taken out because they can't be good predictors. We're also going to take out all the variables which are not motion-data, i.e. the names and timestamp variables, window variables, and the X variable which is just an identifier for each obervation. The reason we're taking this out is because we're going to be doing random sampling so time-data wouldn't be observed sequentially and therefore couldn't have an impact, and also because we want to avoid overfitting to specific participants who performed the exercises - i.e. we want our model to generalize to new participants. Essentially we want to be able to predict how they did the exercise solely based on the motion information.
+
+```{r, cache=T}
+T_Data <- T_Data[, colSums(is.na(T_Data)) != 19216 ]
+T_Data <- T_Data[,-c(1:7)]
+dim(T_Data)
+```
+
+Now that we have our training data set, we sub-partition it into a training and a test set. We're going to observe the performance of a few different models by building them in the training and test sets and refining until we get the best model. We will then apply the best prediction model to the seperate testing data set which is included in the seperate file - to avoid confusion we will call this the validation set, which we're only going to use at the very end to make predictions on the 'classe' variable for 20 test cases. When we submit in the programming assignment and get automated responces on whether we predicted correctly we will know how well our machine algorithm did (retrospectively, really well, I got 19/20 right so our true out-of-sample accuracy is 95% and error is 5%). 
+
+To divide our T_Data into the training and test sets, we're going to do a 70/30 split for training/testing respectively.
+
+### Subdivide into Training and Test Sets
+
+```{r, message=FALSE}
+library(caret)
+inTrain <- createDataPartition(y=T_Data$classe, p=.70, list=F)
+training <- T_Data[inTrain,]
+testing <- T_Data[-inTrain,]
+dim(training) ## dimentions of training set
+dim(testing) ## dimentions of test set
+```
+
+### Observe Redundant Predictors
+
+Since we have 52 predictor variables, let us see which are highy correlated to try to parse down the number of predictors we use.
+
+```{r}
+M <- abs(cor(training[,-c(1,53)]))
+diag(M) <- 0
+correlated <- which(M>.8, arr.ind=T)
+correlated
+```
+
+Looks like we have many highly correlated variables which therefore might be redundant. In order to address this and parse down the number of predictors we use, we will use PCA which essentially picks out a combination that captures "most of the information" and results in reduced number of predictors and reduced noise. 
+
+Because this is a classification problem, we will try building a tree and a random forest using PCA and see which of these two models provides a better out-of-sample accuracy. We will then use the better performing model to predict the values in the final validation set.
+
+### Preprocess the Data
+
+We pre-process the data to retain 85% of the information:
+```{r}
+preProc <- preProcess(x=training[,-53], method="pca", thresh=.85)
+trainPC <- predict(preProc, training[, -53])
+```
+
+### Build and Evaluate Tree Algorithm
+Next, let's first fit a tree model and check out it's accuracy within the training set:
+```{r, cache=T, message=FALSE}
+set.seed(100)
+tree_model <- train(training$classe ~ ., method="rpart", data=trainPC)
+tree_model
+```
+Low Accuracy and Low Kappa (39% and 18%, respectively) - not a great model. Let's see what the Accuracy/Kappa look like in the testing set when using this model:
+
+```{r}
+set.seed(200)
+testPC <- predict(preProc, testing[,-53])
+confusionMatrix(testing$classe, predict(tree_model, testPC))
+```
+
+The out-of-sample accuracy is bad - we only would predict 38% correctly out-of-sample with this model.
+
+### Build and Evaluate Random Forest Model
+Let's now try to build a Random Foreset model with PCA:
+```{r, cache=T, message=FALSE}
+set.seed(300)
+forest_model <- train(training$classe ~ ., method="rf", data=trainPC)
+forest_model
+```
+In the training set we get Accuracy and Kappa, 95% and 94%, respectively - much better than the tree model. Let's see what they are on the test set to see what the out-of-sample accuracy looks like.
+
+```{r}
+set.seed(400)
+testPC <- predict(preProc, testing[,-53])
+confusionMatrix(testing$classe, predict(forest_model, testPC))
+```
+
+We get good results - 97% accuracy and a Kappa of 96%! 
+
+### Model Choice and Performance Expectations
+
+We will go with the Random Forest model and apply it to the third validation set, which we haven't seen before, to get an idea of what the true out-of-sample accuracy would be. We expect that the out-of-sample accuracy we got with our testing set here is a little optimistic, so we should get a little below 97% accuracy when applying this model to the validation set. Therefore the out-of-sample error is expected to be about 5% or less.
+
+
